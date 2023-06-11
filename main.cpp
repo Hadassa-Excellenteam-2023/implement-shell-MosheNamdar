@@ -11,8 +11,6 @@
  * Run: ./main
  */
 
-
-
 //-------include section----------
 #include <iostream>
 #include <sstream>
@@ -21,6 +19,8 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <cstring>
 
 // Struct to hold information about a background process
 struct BackgroundProcess {
@@ -31,7 +31,7 @@ struct BackgroundProcess {
 //------prototypes------------------
 void executeCommand(const std::string& command, bool runInBackground, std::vector<BackgroundProcess>& backgroundProcesses);
 std::vector<std::string> splitString(const std::string& input, char delimiter);
-void showBackgroundProcesses(const std::vector<BackgroundProcess>& backgroundProcesses);
+void showBackgroundProcesses(std::vector<BackgroundProcess>& backgroundProcesses);
 
 
 //-------main-----------------------
@@ -83,12 +83,72 @@ void executeCommand(const std::string& command, bool runInBackground, std::vecto
         // Child process
         std::vector<std::string> args = splitString(command, ' ');
 
-        // Convert vector of strings to char* array
+        // Check for input/output redirection
+        bool inputRedirect = false;
+        bool outputRedirect = false;
+        std::string inputFile, outputFile;
         std::vector<char*> cArgs;
+
         for (const auto& arg : args)
+        {
+            if (arg == "<")
+            {
+                inputRedirect = true;
+                continue;
+            }
+
+            if (arg == ">")
+            {
+                outputRedirect = true;
+                continue;
+            }
+
+            if (inputRedirect)
+            {
+                inputFile = arg;
+                inputRedirect = false;
+                continue;
+            }
+
+            if (outputRedirect)
+            {
+                outputFile = arg;
+                outputRedirect = false;
+                continue;
+            }
+
             cArgs.push_back(const_cast<char*>(arg.c_str()));
-        
+        }
+
         cArgs.push_back(nullptr); // Add a null terminator at the end
+
+        // Handle input redirection
+        if (!inputFile.empty())
+        {
+            int inputFileDescriptor = open(inputFile.c_str(), O_RDONLY);
+            if (inputFileDescriptor == -1)
+            {
+                std::cerr << "Failed to open input file: " << inputFile << std::endl;
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(inputFileDescriptor, STDIN_FILENO);
+            close(inputFileDescriptor);
+        }
+
+        // Handle output redirection
+        if (!outputFile.empty())
+        {
+            int outputFileDescriptor = open(outputFile.c_str(), O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+            if (outputFileDescriptor == -1)
+            {
+                std::cerr << "Failed to open output file: " << outputFile << std::endl;
+                exit(EXIT_FAILURE);
+            }
+
+            dup2(outputFileDescriptor, STDOUT_FILENO);
+            close(outputFileDescriptor);
+        }
 
         execvp(cArgs[0], cArgs.data());       // Execute the command
 
@@ -120,8 +180,6 @@ void executeCommand(const std::string& command, bool runInBackground, std::vecto
     }
 }
 
-
-//--------------------------------------------------------------
 std::vector<std::string> splitString(const std::string& input, char delimiter)
 {
     std::vector<std::string> tokens;       // Vector to store the split strings
@@ -134,17 +192,27 @@ std::vector<std::string> splitString(const std::string& input, char delimiter)
     return tokens;
 }
 
-
-//--------------------------------------------------------------
-void showBackgroundProcesses(const std::vector<BackgroundProcess>& backgroundProcesses)
-{
+void showBackgroundProcesses(std::vector<BackgroundProcess>& backgroundProcesses) {
     std::cout << "Background processes:" << std::endl;
-    
-    for (const auto& process : backgroundProcesses)
-        std::cout << "PID: " << process.pid << ", Command: " << process.command << std::endl;       // Display each background process
+
+    auto it = backgroundProcesses.begin();
+    while (it != backgroundProcesses.end()) {
+        int status;
+        pid_t result = waitpid(it->pid, &status, WNOHANG);
+        if (result == -1 || result > 0) {
+            // Process has completed or encountered an error
+            it = backgroundProcesses.erase(it);
+        } else {
+            // Process is still running
+            std::cout << "PID: " << it->pid << ", Command: " << it->command << std::endl;
+            ++it;
+        }
+    }
 }
 
 
-//------------------------------------------------------------------
-//------------------------------------------------------------------
-//------------------------------------------------------------------
+//-------------------------------------------------------
+//-------------------------------------------------------
+//-------------------------------------------------------
+
+
